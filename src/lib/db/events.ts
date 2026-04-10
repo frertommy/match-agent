@@ -48,6 +48,7 @@ export async function upsertMatchEvent(event: {
   awayScoreAfter: number | null;
   confirmed: boolean;
   sourceCount: number;
+  detectionLatencyMs?: number | null;
 }): Promise<{ isNew: boolean }> {
   // Check for duplicate
   const existing = await findDuplicateEvent(event.fixtureId, event.eventType, event.matchClockSeconds);
@@ -83,6 +84,7 @@ export async function upsertMatchEvent(event: {
     confirmed: event.confirmed,
     source_count: event.sourceCount,
     first_reported_at: new Date().toISOString(),
+    detection_latency_ms: event.detectionLatencyMs ?? null,
   });
 
   if (error) {

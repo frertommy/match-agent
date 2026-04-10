@@ -221,3 +221,45 @@ export interface FotMobMatch {
   time: string;
   leagueId: number;
 }
+
+// ─── Poll Cycle Log ──────────────────────────────────────────────────────────
+
+export interface PollCycleLog {
+  id?: number;
+  invocation_id: string;
+  iteration: number;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number;
+  fixtures_polled: number;
+  events_emitted: number;
+  status_changes: number;
+  espn_latency_ms: number | null;
+  fotmob_latency_ms: number | null;
+  espn_observations: number;
+  fotmob_observations: number;
+  active_fixtures: number;
+  errors: string[];
+  created_at?: string;
+}
+
+export interface HotPollCycleResult {
+  fixturesPolled: number;
+  eventsEmitted: number;
+  statusChanges: number;
+  espnLatencyMs: number | null;
+  fotmobLatencyMs: number | null;
+  espnObservations: number;
+  fotmobObservations: number;
+  activeFixtures: number;
+  errors: string[];
+}
+
+export interface PollHealthStats {
+  cyclesLastHour: number;
+  avgCycleDurationMs: number;
+  avgEspnLatencyMs: number;
+  avgFotmobLatencyMs: number;
+  eventsDetectedLastHour: number;
+  errorCyclesLastHour: number;
+}

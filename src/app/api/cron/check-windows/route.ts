@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 /**
  * Vercel Cron: runs every 1 minute.
  * Checks if any poll windows are currently active.
- * If so, triggers a hot poll cycle.
+ * If so, triggers hot poll (fire-and-forget — the hot poll loops for ~55s internally).
  */
 export async function GET(request: Request) {
   // Verify cron secret
@@ -32,20 +32,18 @@ export async function GET(request: Request) {
       });
     }
 
-    // Trigger hot poll by calling the hot poll endpoint
+    // Fire-and-forget: trigger hot poll (it runs ~55s internally, don't await)
     const baseUrl = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
       : 'http://localhost:3000';
 
-    const pollResponse = await fetch(`${baseUrl}/api/poll/hot`, {
+    fetch(`${baseUrl}/api/poll/hot`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${process.env.CRON_SECRET}`,
       },
-    });
-
-    const pollResult = await pollResponse.json();
+    }).catch((err) => console.error('[Cron] Hot poll trigger failed:', err));
 
     return NextResponse.json({
       success: true,
@@ -53,7 +51,7 @@ export async function GET(request: Request) {
       activeWindows: activeWindows.length,
       activated,
       deactivated,
-      pollResult,
+      message: 'Hot poll triggered (fire-and-forget)',
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
