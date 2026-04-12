@@ -41,6 +41,8 @@ export interface ConsensusResult {
     awayScoreAfter: number | null;
   }>;
   lifecycleEvents: Array<'kickoff' | 'halftime' | 'full_time' | 'game_start' | 'game_end'>;
+  /** When the source observation was fetched — used to compute detection latency */
+  observedAt: Date | null;
 }
 
 // ─── Main Consensus Logic ────────────────────────────────────────────────────
@@ -57,6 +59,7 @@ export function runConsensus(
     fixtureId: fixture.id,
     statusUpdate: null,
     statusConfirmed: false,
+    observedAt: espnObs?.observedAt ?? null,
     scoreUpdate: null,
     newEvents: [],
     lifecycleEvents: [],
@@ -169,6 +172,11 @@ export async function applyConsensus(result: ConsensusResult): Promise<void> {
     await updateFixtureStatus(result.fixtureId, update as Parameters<typeof updateFixtureStatus>[1]);
   }
 
+  // Compute detection latency: time from observation fetch to now (DB write)
+  const detectionLatencyMs = result.observedAt
+    ? Date.now() - result.observedAt.getTime()
+    : null;
+
   // Insert lifecycle events
   for (const le of result.lifecycleEvents) {
     await upsertMatchEvent({
@@ -182,6 +190,7 @@ export async function applyConsensus(result: ConsensusResult): Promise<void> {
       awayScoreAfter: result.scoreUpdate?.away ?? null,
       confirmed: result.statusConfirmed,
       sourceCount: result.statusConfirmed ? 2 : 1,
+      detectionLatencyMs,
     });
   }
 
@@ -198,6 +207,7 @@ export async function applyConsensus(result: ConsensusResult): Promise<void> {
       awayScoreAfter: event.awayScoreAfter,
       confirmed: true, // ESPN events are trusted
       sourceCount: 1,
+      detectionLatencyMs,
     });
   }
 }

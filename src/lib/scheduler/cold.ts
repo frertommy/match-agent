@@ -60,8 +60,8 @@ export async function coldSync(daysAhead: number = 14): Promise<{
     const espnObs = await fetchAllESPN(espnDate);
 
     for (const obs of espnObs) {
-      // Derive scheduled_start from the ESPN event date
-      const scheduledStart = obs.observedAt.toISOString();
+      // Use actual kickoff time from ESPN event, not observation time
+      const scheduledStart = obs.scheduledStart.toISOString();
 
       await upsertFixtureFromESPN(obs, scheduledStart);
       fixturesSynced++;

@@ -119,7 +119,8 @@ export interface NormalizedObservation {
   homeScore: number;
   awayScore: number;
   events: NormalizedEvent[];
-  observedAt: Date;
+  scheduledStart: Date; // actual kickoff time from source
+  observedAt: Date;     // when we fetched this data
   latencyMs: number;
 }
 

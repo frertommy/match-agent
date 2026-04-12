@@ -125,6 +125,7 @@ function parseESPNEvent(event: ESPNEvent, competitionId: string, sport: string, 
     homeScore: parseInt(homeCompetitor.score, 10) || 0,
     awayScore: parseInt(awayCompetitor.score, 10) || 0,
     events,
+    scheduledStart: new Date(event.date), // actual kickoff from ESPN
     observedAt: new Date(),
     latencyMs,
   };

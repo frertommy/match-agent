@@ -37,6 +37,7 @@ function parseFotMobMatch(match: FotMobMatch, competitionId: string, latencyMs: 
     homeScore: match.home.score ?? 0,
     awayScore: match.away.score ?? 0,
     events: [], // FotMob matches list doesn't include event details
+    scheduledStart: new Date(match.time), // kickoff time from FotMob
     observedAt: new Date(),
     latencyMs,
   };
