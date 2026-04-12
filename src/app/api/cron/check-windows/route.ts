@@ -76,9 +76,9 @@ export async function GET(request: Request) {
       totalEvents += result.eventsEmitted;
       totalStatusChanges += result.statusChanges;
 
-      // If no active fixtures on FIRST iteration, exit immediately
-      if (iteration === 0 && result.activeFixtures === 0) {
-        console.log('[Cron→Hot] No active fixtures — exiting');
+      // If no active fixtures, exit immediately (don't burn compute for nothing)
+      if (result.activeFixtures === 0) {
+        console.log(`[Cron→Hot] No active fixtures at iteration ${iteration} — exiting`);
         break;
       }
 

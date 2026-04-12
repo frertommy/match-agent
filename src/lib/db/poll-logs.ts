@@ -19,7 +19,7 @@ export async function insertPollCycleLog(log: Omit<PollCycleLog, 'id' | 'created
     espn_observations: log.espn_observations,
     fotmob_observations: log.fotmob_observations,
     active_fixtures: log.active_fixtures,
-    errors: JSON.stringify(log.errors),
+    errors: log.errors,
   });
 
   if (error) {

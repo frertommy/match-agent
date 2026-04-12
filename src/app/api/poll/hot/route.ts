@@ -59,9 +59,9 @@ export async function POST(request: Request) {
       totalEvents += result.eventsEmitted;
       totalStatusChanges += result.statusChanges;
 
-      // If no active fixtures on FIRST iteration, exit immediately
-      if (iteration === 0 && result.activeFixtures === 0) {
-        console.log('[Hot Loop] No active fixtures — exiting immediately');
+      // If no active fixtures, exit immediately (don't burn compute for nothing)
+      if (result.activeFixtures === 0) {
+        console.log(`[Hot Loop] No active fixtures at iteration ${iteration} — exiting`);
         break;
       }
 
