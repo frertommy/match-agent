@@ -1,25 +1,24 @@
 import { fetchAllESPN } from '../sources/espn';
 import { fetchFotMob } from '../sources/fotmob';
-import { getFixturesByESPNIds } from '../db/fixtures';
+import { getFixturesByESPNIdsAllSports } from '../db/fixtures';
 import { insertObservation } from '../db/events';
 import { getActiveFixtureIds, activateCurrentWindows, deactivateExpiredWindows } from '../db/poll-windows';
+import { getSportForCompetition } from '../db/schema';
 import { runConsensus, applyConsensus, matchFotMobObs } from '../consensus/engine';
 import type { HotPollCycleResult } from '../types';
 
 /**
  * Run a single hot poll cycle:
- * 1. Activate/deactivate poll windows
+ * 1. Activate/deactivate poll windows (across all sport schemas)
  * 2. Fetch ESPN (all leagues, parallel) + FotMob (single call, soccer)
  * 3. For each active fixture, run consensus
- * 4. Apply results to DB
- *
- * Returns rich result with source latencies, observation counts, and errors.
+ * 4. Apply results to correct sport schema
  */
 export async function hotPollCycle(): Promise<HotPollCycleResult> {
   const cycleStart = Date.now();
   const errors: string[] = [];
 
-  // Activate/deactivate windows
+  // Activate/deactivate windows across all schemas
   try {
     const activated = await activateCurrentWindows();
     const deactivated = await deactivateExpiredWindows();
@@ -29,7 +28,7 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
     errors.push(`Window management: ${String(err)}`);
   }
 
-  // Get active fixture IDs
+  // Get active fixture IDs across all schemas
   const activeFixtureIds = await getActiveFixtureIds();
   if (activeFixtureIds.length === 0) {
     return {
@@ -57,7 +56,7 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
     }),
   ]);
 
-  // Compute max latencies across parallel fetches
+  // Compute max latencies
   const espnLatencyMs =
     espnObservations.length > 0
       ? Math.max(...espnObservations.map((o) => o.latencyMs))
@@ -72,9 +71,9 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
     `[Hot] ${activeFixtureIds.length} fixtures | ${espnObservations.length} ESPN (${espnLatencyMs ?? 0}ms) + ${fotmobObservations.length} FotMob (${fotmobLatencyMs ?? 0}ms) fetched in ${fetchElapsed}ms`,
   );
 
-  // Load active fixtures from DB
+  // Load active fixtures from DB (across all sport schemas)
   const espnIds = activeFixtureIds.map((id) => id.replace('espn_', '')).filter(Boolean);
-  const fixtures = await getFixturesByESPNIds(espnIds);
+  const fixtures = await getFixturesByESPNIdsAllSports(espnIds);
 
   // Build ESPN observation lookup by event ID
   const espnByEventId = new Map(
@@ -84,18 +83,19 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
   let eventsEmitted = 0;
   let statusChanges = 0;
 
-  // Run consensus for each fixture (isolated error handling per fixture)
+  // Run consensus for each fixture (isolated per fixture)
   for (const fixture of fixtures) {
     try {
+      const sport = getSportForCompetition(fixture.competition_id);
       const espnObs = fixture.espn_event_id
         ? espnByEventId.get(fixture.espn_event_id) ?? null
         : null;
-      const isSoccer = !['nba', 'mlb'].includes(fixture.competition_id);
+      const isSoccer = sport === 'soccer';
       const fotmobObs = isSoccer ? matchFotMobObs(fixture, fotmobObservations) : null;
 
-      // Store raw observations for audit
+      // Store raw observations in correct sport schema
       if (espnObs) {
-        await insertObservation({
+        await insertObservation(sport, {
           fixture_id: fixture.id,
           source: 'espn',
           observed_status: espnObs.status,
@@ -107,7 +107,7 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
         });
       }
       if (fotmobObs) {
-        await insertObservation({
+        await insertObservation(sport, {
           fixture_id: fixture.id,
           source: 'fotmob',
           observed_status: fotmobObs.status,
@@ -119,10 +119,9 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
         });
       }
 
-      // Run consensus
+      // Consensus → apply to correct schema
       const result = runConsensus(fixture, espnObs, fotmobObs);
 
-      // Apply to DB
       if (
         result.statusUpdate ||
         result.scoreUpdate ||
@@ -136,12 +135,12 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
 
         if (result.lifecycleEvents.length > 0) {
           console.log(
-            `[Hot] ${fixture.home_team_name} vs ${fixture.away_team_name}: lifecycle [${result.lifecycleEvents.join(', ')}]`,
+            `[Hot] [${sport}] ${fixture.home_team_name} vs ${fixture.away_team_name}: lifecycle [${result.lifecycleEvents.join(', ')}]`,
           );
         }
         if (result.newEvents.length > 0) {
           console.log(
-            `[Hot] ${fixture.home_team_name} vs ${fixture.away_team_name}: ${result.newEvents.length} events`,
+            `[Hot] [${sport}] ${fixture.home_team_name} vs ${fixture.away_team_name}: ${result.newEvents.length} events`,
           );
         }
       }

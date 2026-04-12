@@ -1,6 +1,7 @@
-import type { Fixture, NormalizedObservation, MatchStatus, NormalizedEvent } from '../types';
+import type { Fixture, NormalizedObservation, MatchStatus, NormalizedEvent, Sport } from '../types';
 import { updateFixtureStatus, findFixtureByTeams } from '../db/fixtures';
 import { upsertMatchEvent, insertObservation } from '../db/events';
+import { getSportForCompetition } from '../db/schema';
 
 // ─── Status Lifecycle ────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ function isKickoff(status: MatchStatus): boolean {
 
 export interface ConsensusResult {
   fixtureId: string;
+  competitionId: string;
   statusUpdate: MatchStatus | null;
   statusConfirmed: boolean;
   scoreUpdate: { home: number; away: number } | null;
@@ -57,6 +59,7 @@ export function runConsensus(
 ): ConsensusResult {
   const result: ConsensusResult = {
     fixtureId: fixture.id,
+    competitionId: fixture.competition_id,
     statusUpdate: null,
     statusConfirmed: false,
     observedAt: espnObs?.observedAt ?? null,
@@ -146,6 +149,7 @@ export function runConsensus(
  */
 export async function applyConsensus(result: ConsensusResult): Promise<void> {
   const now = new Date().toISOString();
+  const sport = getSportForCompetition(result.competitionId);
 
   // Update fixture status + scores
   if (result.statusUpdate || result.scoreUpdate) {
@@ -169,7 +173,7 @@ export async function applyConsensus(result: ConsensusResult): Promise<void> {
       update.actual_end = now;
     }
 
-    await updateFixtureStatus(result.fixtureId, update as Parameters<typeof updateFixtureStatus>[1]);
+    await updateFixtureStatus(result.fixtureId, sport, update as Parameters<typeof updateFixtureStatus>[2]);
   }
 
   // Compute detection latency: time from observation fetch to now (DB write)
@@ -179,7 +183,7 @@ export async function applyConsensus(result: ConsensusResult): Promise<void> {
 
   // Insert lifecycle events
   for (const le of result.lifecycleEvents) {
-    await upsertMatchEvent({
+    await upsertMatchEvent(sport, {
       fixtureId: result.fixtureId,
       eventType: le,
       matchMinute: null,
@@ -196,7 +200,7 @@ export async function applyConsensus(result: ConsensusResult): Promise<void> {
 
   // Insert match events (goals, red cards)
   for (const event of result.newEvents) {
-    await upsertMatchEvent({
+    await upsertMatchEvent(sport, {
       fixtureId: result.fixtureId,
       eventType: event.type,
       matchMinute: event.matchMinute,

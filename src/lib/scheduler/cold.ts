@@ -2,8 +2,8 @@ import { fetchAllESPN } from '../sources/espn';
 import { fetchFotMob } from '../sources/fotmob';
 import { upsertFixtureFromESPN, findFixtureByTeams, linkFotMobId } from '../db/fixtures';
 import { upsertPollWindow } from '../db/poll-windows';
-import { supabase } from '../db/client';
-import type { Competition } from '../types';
+import { getSportForCompetition } from '../db/schema';
+import type { Sport } from '../types';
 
 /**
  * Format date as YYYYMMDD for ESPN API.
@@ -20,19 +20,7 @@ function formatDateFotMob(date: Date): string {
 }
 
 /**
- * Get competition sport mapping.
- */
-async function getCompetitionSports(): Promise<Record<string, string>> {
-  const { data } = await supabase.from('competitions').select('id, sport');
-  const map: Record<string, string> = {};
-  for (const row of data ?? []) {
-    map[row.id] = row.sport;
-  }
-  return map;
-}
-
-/**
- * Cold sync: fetch fixtures for the next N days and upsert into DB.
+ * Cold sync: fetch fixtures for the next N days and upsert into correct sport schemas.
  * Also creates/updates poll windows for each fixture.
  */
 export async function coldSync(daysAhead: number = 14): Promise<{
@@ -42,12 +30,10 @@ export async function coldSync(daysAhead: number = 14): Promise<{
 }> {
   console.log(`[Cold Sync] Starting sync for next ${daysAhead} days...`);
 
-  const sportMap = await getCompetitionSports();
   let fixturesSynced = 0;
   let fotmobLinked = 0;
   let windowsCreated = 0;
 
-  // Iterate each day
   for (let dayOffset = 0; dayOffset <= daysAhead; dayOffset++) {
     const date = new Date();
     date.setDate(date.getDate() + dayOffset);
@@ -60,22 +46,23 @@ export async function coldSync(daysAhead: number = 14): Promise<{
     const espnObs = await fetchAllESPN(espnDate);
 
     for (const obs of espnObs) {
-      // Use actual kickoff time from ESPN event, not observation time
       const scheduledStart = obs.scheduledStart.toISOString();
+      const sport = getSportForCompetition(obs.competitionId);
 
+      // Upsert into correct sport schema
       await upsertFixtureFromESPN(obs, scheduledStart);
       fixturesSynced++;
 
-      // Create poll window
-      const sport = sportMap[obs.competitionId] ?? 'soccer';
+      // Create poll window in correct sport schema
       const fixtureId = `espn_${obs.espnEventId}`;
       await upsertPollWindow(fixtureId, scheduledStart, sport);
       windowsCreated++;
     }
 
-    // Fetch FotMob for this date and try to link IDs
+    // Fetch FotMob for this date and try to link IDs (soccer only)
     const fotmobObs = await fetchFotMob(fotmobDate);
     for (const fObs of fotmobObs) {
+      const sport = getSportForCompetition(fObs.competitionId);
       const match = await findFixtureByTeams(
         fObs.competitionId,
         fObs.homeTeam,
@@ -83,12 +70,11 @@ export async function coldSync(daysAhead: number = 14): Promise<{
         fotmobDate,
       );
       if (match && fObs.fotmobMatchId && !match.fotmob_match_id) {
-        await linkFotMobId(match.id, fObs.fotmobMatchId);
+        await linkFotMobId(match.id, fObs.fotmobMatchId, sport);
         fotmobLinked++;
       }
     }
 
-    // Small delay between days to avoid hammering
     if (dayOffset < daysAhead) {
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
