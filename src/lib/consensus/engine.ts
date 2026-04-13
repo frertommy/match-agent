@@ -220,29 +220,45 @@ export async function applyConsensus(result: ConsensusResult): Promise<void> {
 
 /**
  * Try to find the FotMob observation that matches an ESPN fixture.
- * Match by fotmob_match_id first, then by team name fuzzy match.
+ * Priority: direct ID → alias map → same-competition exact name.
+ * The teamNameMap is pre-loaded from team_name_map table (espn_name → fotmob_name).
  */
 export function matchFotMobObs(
   fixture: Fixture,
   fotmobObservations: NormalizedObservation[],
+  teamNameMap?: Map<string, string>,
 ): NormalizedObservation | null {
-  // Direct ID match
+  // 1. Direct FotMob ID match
   if (fixture.fotmob_match_id) {
     const match = fotmobObservations.find((o) => o.fotmobMatchId === fixture.fotmob_match_id);
     if (match) return match;
   }
 
-  // Fuzzy team name match within same competition
+  // 2. Alias map lookup (espn_name → fotmob_name)
+  if (teamNameMap) {
+    const resolvedHome = teamNameMap.get(fixture.home_team_name.toLowerCase());
+    const resolvedAway = teamNameMap.get(fixture.away_team_name.toLowerCase());
+
+    if (resolvedHome && resolvedAway) {
+      const match = fotmobObservations.find((o) => {
+        if (o.competitionId !== fixture.competition_id) return false;
+        return (
+          o.homeTeam.toLowerCase() === resolvedHome.toLowerCase() &&
+          o.awayTeam.toLowerCase() === resolvedAway.toLowerCase()
+        );
+      });
+      if (match) return match;
+    }
+  }
+
+  // 3. Exact name match within same competition (handles identical names)
   return (
     fotmobObservations.find((o) => {
       if (o.competitionId !== fixture.competition_id) return false;
-      const homeMatch =
-        o.homeTeam.toLowerCase().includes(fixture.home_team_name.toLowerCase().slice(0, 6)) ||
-        fixture.home_team_name.toLowerCase().includes(o.homeTeam.toLowerCase().slice(0, 6));
-      const awayMatch =
-        o.awayTeam.toLowerCase().includes(fixture.away_team_name.toLowerCase().slice(0, 6)) ||
-        fixture.away_team_name.toLowerCase().includes(o.awayTeam.toLowerCase().slice(0, 6));
-      return homeMatch && awayMatch;
+      return (
+        o.homeTeam.toLowerCase() === fixture.home_team_name.toLowerCase() &&
+        o.awayTeam.toLowerCase() === fixture.away_team_name.toLowerCase()
+      );
     }) ?? null
   );
 }

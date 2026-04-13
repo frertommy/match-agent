@@ -5,6 +5,7 @@ import { insertObservation } from '../db/events';
 import { getActiveFixtureIds, activateCurrentWindows, deactivateExpiredWindows } from '../db/poll-windows';
 import { getSportForCompetition } from '../db/schema';
 import { runConsensus, applyConsensus, matchFotMobObs } from '../consensus/engine';
+import { loadFotMobAliasMap } from '../matching/resolve';
 import type { HotPollCycleResult } from '../types';
 
 /**
@@ -63,6 +64,9 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
     );
   }
 
+  // Load FotMob alias map once for this invocation (~100 rows, <10ms)
+  const fotmobAliasMap = await loadFotMobAliasMap();
+
   // Fetch from all sources in parallel
   const [espnObservations, fotmobObservations] = await Promise.all([
     fetchAllESPN().catch((err) => {
@@ -120,7 +124,7 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
         ? espnByEventId.get(fixture.espn_event_id) ?? null
         : null;
       const isSoccer = sport === 'soccer';
-      const fotmobObs = isSoccer ? matchFotMobObs(fixture, fotmobObservations) : null;
+      const fotmobObs = isSoccer ? matchFotMobObs(fixture, fotmobObservations, fotmobAliasMap) : null;
 
       // Store raw observations in correct sport schema
       if (espnObs) {

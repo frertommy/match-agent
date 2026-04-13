@@ -264,3 +264,53 @@ export interface PollHealthStats {
   eventsDetectedLastHour: number;
   errorCyclesLastHour: number;
 }
+
+// ─── Fixture Matching ────────────────────────────────────────────────────────
+
+export interface FixtureLink {
+  id?: number;
+  espn_fixture_id: string;
+  fotmob_match_id: number | null;
+  api_football_fixture_id: number | null;
+  competition_id: string;
+  scheduled_start: string;
+  match_method: 'exact' | 'alias' | 'ai';
+  matched_at?: string;
+}
+
+export interface TeamNameMapping {
+  id?: number;
+  canonical_name: string;
+  espn_name: string | null;
+  fotmob_name: string | null;
+  api_football_name: string | null;
+  competition_id: string;
+  match_method: string;
+}
+
+export interface MsiFixture {
+  fixture_id: number;
+  home_team: string;
+  away_team: string;
+  league: string;
+  commence_time: string;
+  status: string;
+  score: string | null;
+}
+
+export type MatchSource = 'fotmob' | 'api_football';
+
+export interface SourceCandidate {
+  source: MatchSource;
+  id: number;
+  homeTeam: string;
+  awayTeam: string;
+  scheduledStart: string;
+}
+
+export interface AIMatchResult {
+  espnFixtureId: string;
+  candidateId: number;
+  homeMapping: [string, string]; // [espn_name, candidate_name]
+  awayMapping: [string, string];
+}

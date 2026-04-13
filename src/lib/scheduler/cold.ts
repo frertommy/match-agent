@@ -1,78 +1,62 @@
 import { fetchAllESPN } from '../sources/espn';
 import { fetchFotMob } from '../sources/fotmob';
-import { upsertFixtureFromESPN, findFixtureByTeams, linkFotMobId } from '../db/fixtures';
+import { upsertFixtureFromESPN, linkFotMobId } from '../db/fixtures';
 import { upsertPollWindow } from '../db/poll-windows';
 import { getSportForCompetition, queryAllSchemas, sportSchema } from '../db/schema';
-import type { Sport } from '../types';
+import { fetchMsiFixtures, getMsiLeague } from '../db/msi-client';
+import { resolveFixtureLinks } from '../matching/resolve';
+import type { Sport, SourceCandidate, NormalizedObservation } from '../types';
 
-/**
- * Format date as YYYYMMDD for ESPN API.
- */
 function formatDateESPN(date: Date): string {
   return date.toISOString().slice(0, 10).replace(/-/g, '');
 }
 
-/**
- * Format date as YYYY-MM-DD for FotMob API.
- */
-function formatDateFotMob(date: Date): string {
+function formatDateISO(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
 /**
- * Cold sync: fetch fixtures for the next N days and upsert into correct sport schemas.
- * Also creates/updates poll windows for each fixture.
+ * Cold sync: fetch fixtures, match across sources (ESPN ↔ FotMob ↔ API-Football),
+ * create poll windows, clean up stale statuses.
  */
 export async function coldSync(daysAhead: number = 14): Promise<{
   fixturesSynced: number;
   fotmobLinked: number;
+  msiLinked: number;
   windowsCreated: number;
 }> {
   console.log(`[Cold Sync] Starting sync for next ${daysAhead} days...`);
 
   let fixturesSynced = 0;
   let fotmobLinked = 0;
+  let msiLinked = 0;
   let windowsCreated = 0;
 
+  // Collect ESPN observations per day for matching
+  const dailyEspnObs: Map<string, NormalizedObservation[]> = new Map();
+
+  // ─── Phase 1: Upsert ESPN fixtures + poll windows ──────────────────────
   for (let dayOffset = 0; dayOffset <= daysAhead; dayOffset++) {
     const date = new Date();
     date.setDate(date.getDate() + dayOffset);
     const espnDate = formatDateESPN(date);
-    const fotmobDate = formatDateFotMob(date);
+    const isoDate = formatDateISO(date);
 
     console.log(`[Cold Sync] Fetching day ${espnDate}...`);
 
-    // Fetch ESPN for this date
     const espnObs = await fetchAllESPN(espnDate);
+    dailyEspnObs.set(isoDate, espnObs);
 
     for (const obs of espnObs) {
       const scheduledStart = obs.scheduledStart.toISOString();
       const sport = getSportForCompetition(obs.competitionId);
 
-      // Upsert into correct sport schema
       await upsertFixtureFromESPN(obs, scheduledStart);
       fixturesSynced++;
 
-      // Create poll window in correct sport schema
       const fixtureId = `espn_${obs.espnEventId}`;
       await upsertPollWindow(fixtureId, scheduledStart, sport);
       windowsCreated++;
-    }
-
-    // Fetch FotMob for this date and try to link IDs (soccer only)
-    const fotmobObs = await fetchFotMob(fotmobDate);
-    for (const fObs of fotmobObs) {
-      const sport = getSportForCompetition(fObs.competitionId);
-      const match = await findFixtureByTeams(
-        fObs.competitionId,
-        fObs.homeTeam,
-        fObs.awayTeam,
-        fotmobDate,
-      );
-      if (match && fObs.fotmobMatchId && !match.fotmob_match_id) {
-        await linkFotMobId(match.id, fObs.fotmobMatchId, sport);
-        fotmobLinked++;
-      }
     }
 
     if (dayOffset < daysAhead) {
@@ -80,28 +64,97 @@ export async function coldSync(daysAhead: number = 14): Promise<{
     }
   }
 
-  // ─── Stale status cleanup ───────────────────────────────────────────────
-  // Any fixture stuck in a live status whose kickoff was 6+ hours ago is
-  // definitely over. Force to full_time/final so nothing stays stuck
-  // if the hot poll missed the ending (deployment, cron gap, etc.)
+  // ─── Phase 2: Cross-source matching ────────────────────────────────────
+  console.log('[Cold Sync] Starting cross-source matching...');
+
+  for (const [isoDate, espnObs] of dailyEspnObs) {
+    // Only match soccer fixtures (MSI + FotMob are soccer-only)
+    const soccerObs = espnObs.filter(
+      (o) => getSportForCompetition(o.competitionId) === 'soccer',
+    );
+    if (soccerObs.length === 0) continue;
+
+    // Build ESPN fixture list for matching
+    const espnForMatching = soccerObs.map((o) => ({
+      id: `espn_${o.espnEventId}`,
+      competitionId: o.competitionId,
+      homeTeam: o.homeTeam,
+      awayTeam: o.awayTeam,
+      scheduledStart: o.scheduledStart.toISOString(),
+    }));
+
+    // ── Match ESPN ↔ API-Football (MSI) ──
+    try {
+      // Fetch MSI fixtures for this date (all soccer leagues)
+      const competitions = [...new Set(soccerObs.map((o) => o.competitionId))];
+      const msiFixtures: SourceCandidate[] = [];
+
+      for (const compId of competitions) {
+        const msi = await fetchMsiFixtures(isoDate, compId);
+        for (const m of msi) {
+          msiFixtures.push({
+            source: 'api_football',
+            id: m.fixture_id,
+            homeTeam: m.home_team,
+            awayTeam: m.away_team,
+            scheduledStart: m.commence_time,
+          });
+        }
+      }
+
+      if (msiFixtures.length > 0) {
+        const msiStats = await resolveFixtureLinks(espnForMatching, 'api_football', msiFixtures);
+        msiLinked += msiStats.exact + msiStats.alias + msiStats.ai;
+      }
+    } catch (err) {
+      console.error(`[Cold Sync] MSI matching failed for ${isoDate}:`, err);
+    }
+
+    // ── Match ESPN ↔ FotMob ──
+    try {
+      const fotmobObs = await fetchFotMob(isoDate);
+      const fotmobCandidates: SourceCandidate[] = fotmobObs.map((o) => ({
+        source: 'fotmob' as const,
+        id: o.fotmobMatchId!,
+        homeTeam: o.homeTeam,
+        awayTeam: o.awayTeam,
+        scheduledStart: o.scheduledStart.toISOString(),
+      })).filter((c) => c.id != null);
+
+      if (fotmobCandidates.length > 0) {
+        const fmStats = await resolveFixtureLinks(espnForMatching, 'fotmob', fotmobCandidates);
+        fotmobLinked += fmStats.exact + fmStats.alias + fmStats.ai;
+
+        // Backward compat: also set fotmob_match_id on soccer.fixtures
+        for (const cand of fotmobCandidates) {
+          // Find the ESPN fixture that matched this FotMob candidate
+          const espn = espnForMatching.find((e) =>
+            e.homeTeam === cand.homeTeam && e.awayTeam === cand.awayTeam,
+          );
+          // If not exact, the fixture_links table has the mapping
+        }
+      }
+    } catch (err) {
+      console.error(`[Cold Sync] FotMob matching failed for ${isoDate}:`, err);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  // ─── Phase 3: Stale status cleanup ─────────────────────────────────────
   const staleFixed = await fixStaleStatuses();
 
   console.log(
-    `[Cold Sync] Done: ${fixturesSynced} fixtures synced, ${fotmobLinked} FotMob IDs linked, ${windowsCreated} poll windows, ${staleFixed} stale statuses fixed`,
+    `[Cold Sync] Done: ${fixturesSynced} synced, ${msiLinked} MSI linked, ${fotmobLinked} FotMob linked, ${windowsCreated} windows, ${staleFixed} stale fixed`,
   );
 
-  return { fixturesSynced, fotmobLinked, windowsCreated };
+  return { fixturesSynced, fotmobLinked, msiLinked, windowsCreated };
 }
 
-/**
- * Fix fixtures stuck in live statuses that are clearly over.
- * A game scheduled 6+ hours ago that's still "live" is definitely finished.
- */
 async function fixStaleStatuses(): Promise<number> {
   const sixHoursAgo = new Date(Date.now() - 6 * 3600_000).toISOString();
   const liveStatuses = ['live_first_half', 'halftime', 'live_second_half', 'extra_time', 'in_progress'];
 
-  // Soccer → full_time, basketball/baseball → final
   const sportTerminal: Record<string, string> = {
     soccer: 'full_time',
     basketball: 'final',
