@@ -1,6 +1,6 @@
 import { fetchAllESPN } from '../sources/espn';
 import { fetchFotMob } from '../sources/fotmob';
-import { getFixturesByESPNIdsAllSports } from '../db/fixtures';
+import { getFixturesByESPNIdsAllSports, getLiveFixtures } from '../db/fixtures';
 import { insertObservation } from '../db/events';
 import { getActiveFixtureIds, activateCurrentWindows, deactivateExpiredWindows } from '../db/poll-windows';
 import { getSportForCompetition } from '../db/schema';
@@ -28,9 +28,21 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
     errors.push(`Window management: ${String(err)}`);
   }
 
-  // Get active fixture IDs across all schemas
-  const activeFixtureIds = await getActiveFixtureIds();
-  if (activeFixtureIds.length === 0) {
+  // Get fixtures to poll from TWO sources:
+  // 1. Poll windows (upcoming/active games based on schedule)
+  // 2. Live fixtures (anything with a live status — never stop watching a live game)
+  const [windowFixtureIds, liveFixtures] = await Promise.all([
+    getActiveFixtureIds(),
+    getLiveFixtures(),
+  ]);
+
+  // Merge: window IDs + any live fixture IDs not already in windows
+  const allFixtureIds = new Set(windowFixtureIds);
+  for (const f of liveFixtures) {
+    allFixtureIds.add(f.id);
+  }
+
+  if (allFixtureIds.size === 0) {
     return {
       fixturesPolled: 0,
       eventsEmitted: 0,
@@ -42,6 +54,13 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
       activeFixtures: 0,
       errors,
     };
+  }
+
+  const activeFixtureIds = Array.from(allFixtureIds);
+  if (liveFixtures.length > 0 && windowFixtureIds.length < activeFixtureIds.length) {
+    console.log(
+      `[Hot] ${liveFixtures.length} live fixtures added beyond windows (${windowFixtureIds.length} windowed + ${liveFixtures.length} live = ${activeFixtureIds.length} total)`,
+    );
   }
 
   // Fetch from all sources in parallel
@@ -71,9 +90,19 @@ export async function hotPollCycle(): Promise<HotPollCycleResult> {
     `[Hot] ${activeFixtureIds.length} fixtures | ${espnObservations.length} ESPN (${espnLatencyMs ?? 0}ms) + ${fotmobObservations.length} FotMob (${fotmobLatencyMs ?? 0}ms) fetched in ${fetchElapsed}ms`,
   );
 
-  // Load active fixtures from DB (across all sport schemas)
-  const espnIds = activeFixtureIds.map((id) => id.replace('espn_', '')).filter(Boolean);
-  const fixtures = await getFixturesByESPNIdsAllSports(espnIds);
+  // Load fixtures from DB: we already have live fixtures loaded, fetch windowed ones
+  const liveFixtureIds = new Set(liveFixtures.map((f) => f.id));
+  const windowOnlyIds = activeFixtureIds.filter((id) => !liveFixtureIds.has(id));
+  const espnIds = windowOnlyIds.map((id) => id.replace('espn_', '')).filter(Boolean);
+  const windowedFixtures = espnIds.length > 0 ? await getFixturesByESPNIdsAllSports(espnIds) : [];
+
+  // Merge: live fixtures + windowed fixtures (dedup by ID)
+  const seenIds = new Set<string>();
+  const fixtures = [...liveFixtures, ...windowedFixtures].filter((f) => {
+    if (seenIds.has(f.id)) return false;
+    seenIds.add(f.id);
+    return true;
+  });
 
   // Build ESPN observation lookup by event ID
   const espnByEventId = new Map(
