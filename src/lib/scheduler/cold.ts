@@ -2,7 +2,7 @@ import { fetchAllESPN } from '../sources/espn';
 import { fetchFotMob } from '../sources/fotmob';
 import { upsertFixtureFromESPN, findFixtureByTeams, linkFotMobId } from '../db/fixtures';
 import { upsertPollWindow } from '../db/poll-windows';
-import { getSportForCompetition } from '../db/schema';
+import { getSportForCompetition, queryAllSchemas, sportSchema } from '../db/schema';
 import type { Sport } from '../types';
 
 /**
@@ -80,9 +80,55 @@ export async function coldSync(daysAhead: number = 14): Promise<{
     }
   }
 
+  // ─── Stale status cleanup ───────────────────────────────────────────────
+  // Any fixture stuck in a live status whose kickoff was 6+ hours ago is
+  // definitely over. Force to full_time/final so nothing stays stuck
+  // if the hot poll missed the ending (deployment, cron gap, etc.)
+  const staleFixed = await fixStaleStatuses();
+
   console.log(
-    `[Cold Sync] Done: ${fixturesSynced} fixtures synced, ${fotmobLinked} FotMob IDs linked, ${windowsCreated} poll windows`,
+    `[Cold Sync] Done: ${fixturesSynced} fixtures synced, ${fotmobLinked} FotMob IDs linked, ${windowsCreated} poll windows, ${staleFixed} stale statuses fixed`,
   );
 
   return { fixturesSynced, fotmobLinked, windowsCreated };
+}
+
+/**
+ * Fix fixtures stuck in live statuses that are clearly over.
+ * A game scheduled 6+ hours ago that's still "live" is definitely finished.
+ */
+async function fixStaleStatuses(): Promise<number> {
+  const sixHoursAgo = new Date(Date.now() - 6 * 3600_000).toISOString();
+  const liveStatuses = ['live_first_half', 'halftime', 'live_second_half', 'extra_time', 'in_progress'];
+
+  // Soccer → full_time, basketball/baseball → final
+  const sportTerminal: Record<string, string> = {
+    soccer: 'full_time',
+    basketball: 'final',
+    baseball: 'final',
+  };
+
+  let total = 0;
+  for (const [sport, terminalStatus] of Object.entries(sportTerminal)) {
+    const { data, error } = await sportSchema(sport as Sport)
+      .from('fixtures')
+      .update({ status: terminalStatus, updated_at: new Date().toISOString() })
+      .in('status', liveStatuses)
+      .lt('scheduled_start', sixHoursAgo)
+      .select('id, home_team_name, away_team_name, status');
+
+    if (error) {
+      console.error(`[Cold Sync] Stale fix failed for ${sport}:`, error.message);
+      continue;
+    }
+
+    if (data && data.length > 0) {
+      for (const f of data) {
+        console.log(`[Cold Sync] Fixed stale: ${f.home_team_name} vs ${f.away_team_name} → ${terminalStatus}`);
+      }
+      total += data.length;
+    }
+  }
+
+  return total;
 }
