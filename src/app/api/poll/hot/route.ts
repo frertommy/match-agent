@@ -7,7 +7,7 @@ export const maxDuration = 300; // 5 min safety net (Vercel Pro + Fluid Compute)
 export const dynamic = 'force-dynamic';
 
 const LOOP_DURATION_MS = 55_000; // exit after ~55 seconds
-const POLL_INTERVAL_MS = 4_000; // ~4 seconds between iterations
+const POLL_INTERVAL_MS = 2_000; // ~2 seconds between iterations
 
 /**
  * Hot poll endpoint: triggered by check-windows cron.
