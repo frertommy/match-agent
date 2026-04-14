@@ -21,7 +21,7 @@ function normalize(name: string): string {
     .replace(/[\u0300-\u036f]/g, '') // strip accents
     .replace(STRIP_PREFIXES, '')
     .replace(STRIP_SUFFIXES, '')
-    .replace(/[^a-z0-9\s]/g, '') // strip non-alphanumeric
+    .replace(/[^a-z0-9\s]/g, ' ') // replace non-alphanumeric with space (not remove)
     .replace(/\s+/g, ' ')
     .trim();
 }
