@@ -245,33 +245,23 @@ export async function resolveFixtureLinks(
   if (options.useAI && unmatchedEspn.length > 0 && process.env.ANTHROPIC_API_KEY) {
     const remainingCandidates = candidates.filter((c) => !matchedCandidateIds.has(c.id));
 
+    console.log(
+      `[Resolve] Step 3: ${unmatchedEspn.length} unmatched ESPN, ${remainingCandidates.length} remaining candidates`,
+    );
+    for (const ue of unmatchedEspn) {
+      console.log(`[Resolve]   unmatched: ${ue.homeTeam} vs ${ue.awayTeam} (${ue.competitionId})`);
+    }
+
     if (remainingCandidates.length > 0) {
-      // Group by competition for the AI prompt
-      const groupMap = new Map<string, { espn: typeof unmatchedEspn; cands: SourceCandidate[] }>();
-      for (const espn of unmatchedEspn) {
-        if (!groupMap.has(espn.competitionId)) {
-          groupMap.set(espn.competitionId, { espn: [], cands: [] });
-        }
-        groupMap.get(espn.competitionId)!.espn.push(espn);
-      }
-      for (const cand of remainingCandidates) {
-        // Find which competition group this candidate belongs to (by checking ESPN fixtures in same group)
-        for (const [compId, group] of groupMap) {
-          if (group.espn.length > 0) {
-            group.cands.push(cand);
-            break; // candidates don't have competitionId, add to first group
-          }
-        }
-      }
-
-      const aiGroups = Array.from(groupMap.entries()).map(([compId, group]) => ({
-        competitionId: compId,
+      // Single AI group with all unmatched — AI can match across competitions
+      const aiGroups = [{
+        competitionId: unmatchedEspn[0]?.competitionId ?? 'mixed',
         date: unmatchedEspn[0]?.scheduledStart?.slice(0, 10) ?? '',
-        espnFixtures: group.espn.map((e) => ({ id: e.id, homeTeam: e.homeTeam, awayTeam: e.awayTeam })),
-        candidates: group.cands.map((c) => ({ ...c })),
-      }));
+        espnFixtures: unmatchedEspn.map((e) => ({ id: e.id, homeTeam: e.homeTeam, awayTeam: e.awayTeam })),
+        candidates: remainingCandidates.map((c) => ({ ...c })),
+      }];
 
-      console.log(`[Resolve] AI matching ${unmatchedEspn.length} unmatched fixtures...`);
+      console.log(`[Resolve] AI matching ${unmatchedEspn.length} unmatched fixtures against ${remainingCandidates.length} candidates...`);
       const aiResults = await batchAIMatch(aiGroups);
 
       for (const result of aiResults) {
